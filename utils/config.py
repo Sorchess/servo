@@ -23,6 +23,19 @@ COMMAND_MOVE_EN_ADDR = 0x2507 #Адрес регистра запуска ком
 COMMAND_MOVE_POS_ADDR= 0x2603 #Адрес регистра значение команды движения
 COMMAND_POS_ADDR = 0x6064  #Адрес регистра со значением текущей позиции
 
+# =======================
+# CiA 402 (DS402) стандартные объекты
+# =======================
+CONTROLWORD_ADDR = 0x6040       # Controlword - управление состоянием привода
+STATUSWORD_ADDR = 0x6041        # Statusword - статус привода
+MODES_OF_OPERATION_ADDR = 0x6060  # Modes of operation - режим работы
+TARGET_POSITION_ADDR = 0x607A   # Target position - целевая позиция (CSP/PP режимы)
+
+# Profile Position параметры (пишутся по SDO при инициализации)
+PROFILE_VELOCITY  = 5_000_000     # 0x6081, inc/s
+PROFILE_ACCEL_MS  = 500         # 0x6083, ms
+PROFILE_DECEL_MS  = 500         # 0x6084, ms
+
 
 # =======================
 # Настройки временных параметров

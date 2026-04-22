@@ -5,6 +5,7 @@ from ui.tabs.connect_tab import ConnectTab
 from ui.tabs.manual_tab import ManualTab
 from core.mode_controller import ModeController
 from core import servo_commands
+from core import ethercat_driver
 
 
 class MainWindow(QMainWindow):
@@ -45,7 +46,7 @@ class MainWindow(QMainWindow):
         # 3. Закрываем соединение с EtherCAT
         try:
             if self.master:
-                self.master.close()
+                ethercat_driver.close_ethercat_controller(self.master)
                 print("[MainWindow] Соединение с EtherCAT закрыто")
         except Exception as e:
             print(f"[MainWindow] Ошибка при закрытии соединения: {e}")
