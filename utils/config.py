@@ -32,7 +32,7 @@ MODES_OF_OPERATION_ADDR = 0x6060  # Modes of operation - режим работы
 TARGET_POSITION_ADDR = 0x607A   # Target position - целевая позиция (CSP/PP режимы)
 
 # Profile Position параметры (пишутся по SDO при инициализации)
-PROFILE_VELOCITY  = 5_000_000     # 0x6081, inc/s
+PROFILE_VELOCITY  = 50_000_000     # 0x6081, inc/s
 PROFILE_ACCEL_MS  = 500         # 0x6083, ms
 PROFILE_DECEL_MS  = 500         # 0x6084, ms
 

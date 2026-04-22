@@ -3,6 +3,7 @@ import sys
 from PyQt6.QtWidgets import QApplication, QMainWindow, QTabWidget
 from ui.tabs.connect_tab import ConnectTab
 from ui.tabs.manual_tab import ManualTab
+from ui.tabs.telemetry_tab import TelemetryTab
 from core.mode_controller import ModeController
 from core import servo_commands
 from core import ethercat_driver
@@ -21,15 +22,24 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         self.connect_tab = ConnectTab(self.mode_controller)
         self.manual_tab = ManualTab(controller=self.mode_controller)
+        self.telemetry_tab = TelemetryTab(controller=self.mode_controller)
 
         self.tabs.addTab(self.connect_tab, "Подключение")
         self.tabs.addTab(self.manual_tab, "Ручное управление")
+        self.tabs.addTab(self.telemetry_tab, "Телеметрия")
 
         self.setCentralWidget(self.tabs)
 
 
     def closeEvent(self, event):
         self.master = self.mode_controller.get_master()
+        # 0. Останавливаем телеметрию (ДО закрытия EtherCAT)
+        try:
+            if hasattr(self, 'telemetry_tab'):
+                self.telemetry_tab.shutdown()
+        except Exception as e:
+            print(f"[MainWindow] Ошибка при остановке телеметрии: {e}")
+
         # 1. Останавливаем режимы
         if self.mode_controller:
             self.mode_controller.stop_mode()
