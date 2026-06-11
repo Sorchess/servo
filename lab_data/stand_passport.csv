@@ -1,0 +1,2 @@
+stand_id,date,operator,supervisor,drive_model,drive_serial,motor_model,motor_serial,rated_current_A,rated_torque_Nm,max_motor_speed_rpm,connection_type,control_software,control_mode,load_setup,emergency_stop,allowed_speed_rpm,allowed_acceleration,allowed_deceleration,allowed_loads,notes
+stand-01,2026-06-11 15:22:16,Stepan,,ASD-B3-0421-E,DRV-12345,ECM-B3M-CA0604RS1,MOT-67890,4.270,2.391,6000,EtherCAT (CoE),servo-app,PP (Profile Position),,,,,,,

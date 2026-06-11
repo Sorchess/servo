@@ -52,8 +52,9 @@ class EtherCATController:
     """
 
     MODE_PP = 1
+    MODE_PV = 3
 
-    def __init__(self, master, slave_index=0):
+    def __init__(self, master, slave_index=0, mode='pp'):
         self._master = master
         self._slave = master.slaves[slave_index]
         self._out = bytearray(RX_LEN)         # CW=0, TargetPos=0
@@ -61,6 +62,11 @@ class EtherCATController:
         self._pump = None
         self._cw = 0
         self._target = 0
+        # Текущий режим работы (для совместимости со старым кодом — 'pp').
+        # 'pp' — Profile Position (target идёт через PDO 0x607A);
+        # 'pv' — Profile Velocity (target velocity 0x60FF пишется через SDO,
+        #        PDO-маппинг при этом НЕ перепрограммируется — см. ТЗ).
+        self.mode = mode
 
     # -------- запись в выходной буфер --------
     def set_controlword(self, value):
@@ -79,6 +85,23 @@ class EtherCATController:
 
     def position_actual(self):
         return struct.unpack('<i', bytes(self._slave.input[2:6]))[0]
+
+    def controlword(self):
+        """Текущее значение Controlword в выходном буфере (последнее заданное)."""
+        with self._lock:
+            return self._cw
+
+    # -------- запись TargetVelocity по SDO (PV-режим) --------
+    def write_sdo_target_velocity(self, rpm):
+        """Записать 0x60FF (Target velocity), int32. Используется в PV-режиме.
+
+        Значение масштабируется множителем config.VEL_SCALE (по умолчанию 1 —
+        ASDA-B3-E принимает значение в RPM напрямую). Знак RPM = направление.
+        """
+        val = int(round(int(rpm) * config.VEL_SCALE))
+        data = struct.pack('<i', val)
+        with self._lock:
+            self._slave.sdo_write(0x60FF, 0, data)
 
     # -------- старт / стоп фонового потока --------
     def start_pump(self, period_s=0.002):
@@ -102,15 +125,36 @@ class EtherCATController:
         return self._slave
 
 
-def setup_ethercat_controller(ifname='eth0'):
+def setup_ethercat_controller(ifname='eth0', mode='pp'):
     """Инициализация EtherCAT, переход в OP и запуск фонового PDO-потока.
+
+    Параметры:
+        ifname: имя сетевого интерфейса для pysoem.
+        mode:   'pp' (Profile Position, по умолчанию) или 'pv'
+                (Profile Velocity). PDO-маппинг при этом НЕ перепрограммируется
+                — остаётся 6 байт RxPDO: CW(2) + TargetPosition(4). Меняется
+                только Mode of Operation (0x6060) и значение self.mode у
+                возвращаемого контроллера.
 
     Возвращает экземпляр EtherCATController. Старый код, ожидавший master,
     может работать через .master — но запись CW/TargetPos должна идти
     через методы контроллера.
     """
+    if mode not in ('pp', 'pv'):
+        raise ValueError(f"mode must be 'pp' or 'pv', got {mode!r}")
+
     master = pysoem.Master()
-    master.open(ifname)
+    try:
+        master.open(ifname)
+    except RuntimeError as e:
+        # На Windows pysoem кидает RuntimeError, если адаптер занят
+        # другим процессом (UI main.py, другой CLI-запуск, packet capture).
+        raise RuntimeError(
+            f"Не удалось открыть EtherCAT-адаптер {ifname!r}: {e}. "
+            f"Возможно, адаптер занят другим процессом (UI main.py, "
+            f"другой CLI-запуск, packet capture). Закройте конкурирующее "
+            f"приложение и повторите."
+        ) from e
 
     count = master.config_init()
     if count <= 0:
@@ -133,11 +177,15 @@ def setup_ethercat_controller(ifname='eth0'):
             f"Unexpected PDO layout: out={len(slave.output)} in={len(slave.input)}"
         )
 
-    # Mode of Operation = PP (объект 0x6060 не входит в PDO -> SDO)
+    # Mode of Operation: 1 = PP, 3 = PV. Объект 0x6060 не входит в PDO → SDO.
+    mode_val = EtherCATController.MODE_PV if mode == 'pv' else EtherCATController.MODE_PP
     slave.sdo_write(config.MODES_OF_OPERATION_ADDR, 0,
-                    struct.pack('b', EtherCATController.MODE_PP))
+                    struct.pack('b', mode_val))
+    print(f"[ethercat] MoO set to {mode_val} ({'PV' if mode == 'pv' else 'PP'})")
 
-    # Профильные параметры (тоже не в PDO)
+    # Профильные параметры (тоже не в PDO). В PV-режиме оркестратор позже
+    # перепишет 0x6083/0x6084 явно через SET_PROFILE_ACCEL/DECEL — здесь
+    # ставим дефолтные значения из config как baseline.
     try:
         slave.sdo_write(0x6081, 0, struct.pack('<I', config.PROFILE_VELOCITY))
         slave.sdo_write(0x6083, 0, struct.pack('<I', config.PROFILE_ACCEL_MS))
@@ -145,7 +193,7 @@ def setup_ethercat_controller(ifname='eth0'):
     except Exception as e:
         print(f"  warn: profile params: {e}")
 
-    controller = EtherCATController(master, config.SLAVE_INDEX)
+    controller = EtherCATController(master, config.SLAVE_INDEX, mode=mode)
 
     # Прайминг PDO-кадров до перехода в OP — нужно, чтобы slave увидел
     # валидный output в момент входа в OP (иначе словим AL.180 watchdog).
@@ -195,16 +243,59 @@ def write_variable(controller_or_master, slave_index, index, subindex, data):
 
 
 def close_ethercat_controller(controller_or_master):
+    """Аккуратно остановить PDO-обмен и закрыть pysoem-мастер.
+
+    На Windows pysoem иногда не отпускает сетевой адаптер сразу — даём
+    ему до 2 с (фактическая блокирующая задержка ~0.3 с после close,
+    плюс ретраи write_state/close в этом окне). Это снижает вероятность
+    того, что следующий запуск (или UI) словит "адаптер занят".
+    """
+    t0 = time.time()
+    deadline = t0 + 2.0
+
     if isinstance(controller_or_master, EtherCATController):
-        controller_or_master.stop_pump()
+        ctrl = controller_or_master
         try:
-            controller_or_master.master.state = pysoem.INIT_STATE
-            controller_or_master.master.write_state()
-        except Exception:
-            pass
-        controller_or_master.master.close()
+            ctrl.stop_pump()
+        except Exception as e:  # noqa: BLE001
+            print(f"[ethercat] stop_pump warn: {e}")
+
+        # Перевод в INIT — с короткими ретраями, пока укладываемся в дедлайн.
+        while True:
+            try:
+                ctrl.master.state = pysoem.INIT_STATE
+                ctrl.master.write_state()
+                break
+            except Exception as e:  # noqa: BLE001
+                if time.time() >= deadline:
+                    print(f"[ethercat] write_state(INIT) warn: {e}")
+                    break
+                time.sleep(0.05)
+
+        # Закрытие мастера — то же самое: ретраи в окне 2 с.
+        while True:
+            try:
+                ctrl.master.close()
+                break
+            except Exception as e:  # noqa: BLE001
+                if time.time() >= deadline:
+                    print(f"[ethercat] master.close warn: {e}")
+                    break
+                time.sleep(0.05)
+
+        # Дополнительная фиксированная пауза, чтобы драйвер реально отпустил
+        # handle до возврата управления оператору (Windows-специфично).
+        time.sleep(min(0.3, max(0.0, deadline - time.time())))
+        elapsed_ms = int((time.time() - t0) * 1000)
+        print(f"[ethercat] adapter released (waited {elapsed_ms} ms)")
     else:
-        controller_or_master.close()
+        try:
+            controller_or_master.close()
+        except Exception as e:  # noqa: BLE001
+            print(f"[ethercat] master.close warn: {e}")
+        time.sleep(0.3)
+        elapsed_ms = int((time.time() - t0) * 1000)
+        print(f"[ethercat] adapter released (waited {elapsed_ms} ms)")
 
 
 def _as_master(obj):
