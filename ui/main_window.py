@@ -4,6 +4,7 @@ from PyQt6.QtWidgets import QApplication, QMainWindow, QTabWidget
 from ui.tabs.connect_tab import ConnectTab
 from ui.tabs.manual_tab import ManualTab
 from ui.tabs.telemetry_tab import TelemetryTab
+from ui.tabs.lab_tab import LabTab
 from core.mode_controller import ModeController
 from core import servo_commands
 from core import ethercat_driver
@@ -23,10 +24,12 @@ class MainWindow(QMainWindow):
         self.connect_tab = ConnectTab(self.mode_controller)
         self.manual_tab = ManualTab(controller=self.mode_controller)
         self.telemetry_tab = TelemetryTab(controller=self.mode_controller)
+        self.lab_tab = LabTab(controller=self.mode_controller)
 
         self.tabs.addTab(self.connect_tab, "Подключение")
         self.tabs.addTab(self.manual_tab, "Ручное управление")
         self.tabs.addTab(self.telemetry_tab, "Телеметрия")
+        self.tabs.addTab(self.lab_tab, "Лабораторная запись")
 
         self.setCentralWidget(self.tabs)
 
@@ -37,6 +40,8 @@ class MainWindow(QMainWindow):
         try:
             if hasattr(self, 'telemetry_tab'):
                 self.telemetry_tab.shutdown()
+            if hasattr(self, 'lab_tab'):
+                self.lab_tab.shutdown()
         except Exception as e:
             print(f"[MainWindow] Ошибка при остановке телеметрии: {e}")
 

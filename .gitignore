@@ -1,2 +1,7 @@
 /.venv
 __pycache__
+
+# --- lab_data: сырые данные локально, в git только структура ---
+lab_data/*
+!lab_data/.gitkeep
+!lab_data/README.md
