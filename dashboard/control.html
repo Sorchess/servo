@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ServoAI — Управление</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="layout">
+  <aside class="sidebar">
+    <div class="logo"><div class="logo-icon">⚙</div><div><h1>ServoAI</h1><span>Delta ASDA-B3-E</span></div></div>
+    <ul class="nav-links">
+      <li><a href="index.html"><span class="icon">📊</span> Главная</a></li>
+      <li><a href="analytics.html"><span class="icon">📈</span> Аналитика</a></li>
+      <li><a href="predictions.html"><span class="icon">🔮</span> Прогнозирование</a></li>
+      <li><a href="diagnostics.html"><span class="icon">🔧</span> Диагностика</a></li>
+      <li><a href="control.html" class="active"><span class="icon">🎮</span> Управление</a></li>
+    </ul>
+    <div class="sidebar-footer"><div class="status-badge"><span class="status-dot"></span>Привод онлайн</div></div>
+  </aside>
+
+  <main class="main">
+    <div class="page-header">
+      <h2>Управление сервоприводом</h2>
+      <p>Панель управления Delta ASDA-B3-E (демонстрационный режим)</p>
+    </div>
+
+    <!-- Connection + Emergency -->
+    <div class="kpi-grid" style="margin-bottom:20px">
+      <div class="card" style="text-align:center">
+        <div class="card-title">Подключение</div>
+        <div style="margin:16px 0">
+          <span class="badge badge-ok" style="font-size:14px;padding:8px 20px" id="conn-badge">EtherCAT — Подключено</span>
+        </div>
+        <div style="display:flex;gap:8px;justify-content:center">
+          <button class="btn btn-success" onclick="logCmd('Подключение установлено')">Подключить</button>
+          <button class="btn" onclick="logCmd('Отключено от привода')">Отключить</button>
+        </div>
+      </div>
+      <div class="card" style="text-align:center">
+        <div class="card-title">Аварийный останов</div>
+        <div style="margin:20px 0">
+          <button class="btn btn-danger btn-lg" onclick="emergencyStop()" style="width:100%">
+            ⛔ АВАРИЙНЫЙ СТОП
+          </button>
+        </div>
+        <div style="color:var(--text-muted);font-size:12px">Немедленная остановка привода и снятие момента</div>
+      </div>
+    </div>
+
+    <div class="chart-grid">
+      <!-- Mode selection -->
+      <div class="card">
+        <div class="card-title">Режим работы</div>
+        <div class="control-group">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px">
+            <button class="btn btn-primary mode-btn active-mode" data-mode="1" onclick="setMode(this)">📍 Позиционный</button>
+            <button class="btn mode-btn" data-mode="3" onclick="setMode(this)">⚡ Скоростной</button>
+            <button class="btn mode-btn" data-mode="4" onclick="setMode(this)">🔄 Моментный</button>
+            <button class="btn mode-btn" data-mode="8" onclick="setMode(this)">🎯 CSP</button>
+          </div>
+
+          <div class="input-group">
+            <label>Целевая позиция</label>
+            <input type="number" id="target-pos" value="0" step="1000">
+            <span style="color:var(--text-muted);font-size:12px">inc</span>
+          </div>
+          <div class="input-group">
+            <label>Целевая скорость</label>
+            <input type="number" id="target-vel" value="500" step="100">
+            <span style="color:var(--text-muted);font-size:12px">RPM</span>
+          </div>
+          <div class="input-group">
+            <label>Целевой момент</label>
+            <input type="number" id="target-trq" value="10" step="1">
+            <span style="color:var(--text-muted);font-size:12px">% номинала</span>
+          </div>
+          <div class="input-group">
+            <label>Ограничение тока</label>
+            <input type="number" id="limit-cur" value="100" step="5" min="0" max="100">
+            <span style="color:var(--text-muted);font-size:12px">%</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- State machine -->
+      <div class="card">
+        <div class="card-title">Состояние CiA 402</div>
+        <div style="text-align:center;margin:16px 0">
+          <span class="badge badge-ok" style="font-size:14px;padding:8px 20px" id="state-badge">Operation Enabled</span>
+        </div>
+        <div class="control-group" style="gap:8px">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+            <button class="btn btn-success" onclick="sendCtrl('Servo ON — привод включён')">Servo ON</button>
+            <button class="btn" onclick="sendCtrl('Servo OFF — привод выключен')">Servo OFF</button>
+            <button class="btn btn-primary" onclick="sendCtrl('Запуск движения')">Старт</button>
+            <button class="btn btn-danger" onclick="sendCtrl('Остановка движения')">Стоп</button>
+          </div>
+          <button class="btn" onclick="sendCtrl('Сброс ошибок (Fault Reset)')">🔄 Сброс ошибок</button>
+        </div>
+
+        <div style="margin-top:20px">
+          <div class="card-title">Текущие значения</div>
+          <div class="stat-row"><span class="stat-label">Позиция</span><span class="stat-value" id="cv-pos">—</span></div>
+          <div class="stat-row"><span class="stat-label">Скорость</span><span class="stat-value" id="cv-vel">—</span></div>
+          <div class="stat-row"><span class="stat-label">Момент</span><span class="stat-value" id="cv-trq">—</span></div>
+          <div class="stat-row"><span class="stat-label">Температура</span><span class="stat-value" id="cv-temp">—</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Command log -->
+    <div class="card" style="margin-top:20px">
+      <div class="card-title">Лог команд</div>
+      <div class="log-console" id="cmd-log">
+        <div class="log-line"><span class="time">[--:--:--]</span> <span class="ok">Система инициализирована. Демонстрационный режим.</span></div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script src="data.js"></script>
+<script>
+const last = TELEMETRY[TELEMETRY.length - 1];
+document.getElementById('cv-pos').textContent = last.position.toLocaleString() + ' inc';
+document.getElementById('cv-vel').textContent = last.velocity + ' RPM';
+document.getElementById('cv-trq').textContent = (last.torque_Nm?.toFixed(4) ?? '—') + ' Н·м';
+document.getElementById('cv-temp').textContent = last.drive_temp + '°C';
+
+function now() {
+  const d = new Date();
+  return d.toTimeString().split(' ')[0];
+}
+
+function logCmd(msg, cls = 'cmd') {
+  const log = document.getElementById('cmd-log');
+  log.innerHTML += `<div class="log-line"><span class="time">[${now()}]</span> <span class="${cls}">${msg}</span></div>`;
+  log.scrollTop = log.scrollHeight;
+}
+
+function setMode(btn) {
+  document.querySelectorAll('.mode-btn').forEach(b => { b.classList.remove('btn-primary'); b.classList.add(''); });
+  btn.classList.add('btn-primary');
+  const modes = { '1': 'Позиционный (PP)', '3': 'Скоростной (PV)', '4': 'Моментный (TQ)', '8': 'CSP' };
+  logCmd('Режим установлен: ' + modes[btn.dataset.mode]);
+}
+
+function sendCtrl(msg) {
+  logCmd(msg);
+}
+
+function emergencyStop() {
+  logCmd('⛔ АВАРИЙНЫЙ ОСТАНОВ АКТИВИРОВАН', 'err');
+  document.getElementById('state-badge').textContent = 'Quick Stop Active';
+  document.getElementById('state-badge').className = 'badge badge-danger';
+  setTimeout(() => {
+    logCmd('Привод остановлен. Требуется сброс ошибок.', 'err');
+  }, 500);
+}
+</script>
+
+<style>
+.active-mode { background: rgba(59,130,246,0.2) !important; border-color: rgba(59,130,246,0.4) !important; }
+</style>
+</body>
+</html>

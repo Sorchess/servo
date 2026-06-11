@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ServoAI — Аналитика</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+</head>
+<body>
+<div class="layout">
+  <aside class="sidebar">
+    <div class="logo">
+      <div class="logo-icon">⚙</div>
+      <div><h1>ServoAI</h1><span>Delta ASDA-B3-E</span></div>
+    </div>
+    <ul class="nav-links">
+      <li><a href="index.html"><span class="icon">📊</span> Главная</a></li>
+      <li><a href="analytics.html" class="active"><span class="icon">📈</span> Аналитика</a></li>
+      <li><a href="predictions.html"><span class="icon">🔮</span> Прогнозирование</a></li>
+      <li><a href="diagnostics.html"><span class="icon">🔧</span> Диагностика</a></li>
+      <li><a href="control.html"><span class="icon">🎮</span> Управление</a></li>
+    </ul>
+    <div class="sidebar-footer"><div class="status-badge"><span class="status-dot"></span>Привод онлайн</div></div>
+  </aside>
+
+  <main class="main">
+    <div class="page-header">
+      <h2>Аналитика данных</h2>
+      <p>Подробные графики, статистика и распределения параметров сервопривода</p>
+    </div>
+
+    <!-- Statistics cards -->
+    <div class="kpi-grid" id="stats-grid"></div>
+
+    <!-- Full charts -->
+    <div class="card" style="margin-bottom:20px">
+      <div class="card-title">Позиция (инкременты) vs Время</div>
+      <div class="chart-container chart-full"><canvas id="ch-pos"></canvas></div>
+    </div>
+
+    <div class="chart-grid">
+      <div class="card">
+        <div class="card-title">Скорость (об/мин)</div>
+        <div class="chart-container chart-full"><canvas id="ch-vel"></canvas></div>
+      </div>
+      <div class="card">
+        <div class="card-title">Крутящий момент (Н·м)</div>
+        <div class="chart-container chart-full"><canvas id="ch-trq"></canvas></div>
+      </div>
+    </div>
+
+    <div class="chart-grid">
+      <div class="card">
+        <div class="card-title">Ток (А)</div>
+        <div class="chart-container chart-full"><canvas id="ch-cur"></canvas></div>
+      </div>
+      <div class="card">
+        <div class="card-title">Напряжение DC шины (В)</div>
+        <div class="chart-container chart-full"><canvas id="ch-volt"></canvas></div>
+      </div>
+    </div>
+
+    <!-- Histograms -->
+    <div class="page-header" style="margin-top:12px"><h2>Распределения</h2></div>
+    <div class="chart-grid">
+      <div class="card">
+        <div class="card-title">Гистограмма скорости</div>
+        <div class="chart-container"><canvas id="hist-vel"></canvas></div>
+      </div>
+      <div class="card">
+        <div class="card-title">Гистограмма момента</div>
+        <div class="chart-container"><canvas id="hist-trq"></canvas></div>
+      </div>
+    </div>
+
+    <!-- Correlation -->
+    <div class="card" style="margin-top:20px">
+      <div class="card-title">Корреляционная матрица</div>
+      <div style="overflow-x:auto"><canvas id="corr-matrix" height="320"></canvas></div>
+    </div>
+  </main>
+</div>
+
+<script src="data.js"></script>
+<script>
+const labels = TELEMETRY.map(s => s.t.toFixed(1));
+
+const chartCfg = (color) => ({
+  responsive: true, maintainAspectRatio: false,
+  plugins: { legend: { display: false } },
+  scales: {
+    x: { ticks: { color:'#64748b', maxTicksLimit:12, font:{size:11} }, grid:{ color:'rgba(255,255,255,0.03)' } },
+    y: { ticks: { color:'#64748b', font:{size:11} }, grid:{ color:'rgba(255,255,255,0.05)' } }
+  },
+  elements: { point:{radius:0}, line:{tension:0.3,borderWidth:1.5} }
+});
+
+function lineChart(id, data, color) {
+  new Chart(document.getElementById(id), {
+    type:'line',
+    data:{ labels, datasets:[{ data, borderColor:color, fill:true, backgroundColor:color+'12' }] },
+    options: chartCfg(color)
+  });
+}
+
+lineChart('ch-pos', TELEMETRY.map(s=>s.position), '#3b82f6');
+lineChart('ch-vel', TELEMETRY.map(s=>s.velocity), '#8b5cf6');
+lineChart('ch-trq', TELEMETRY.map(s=>s.torque_Nm), '#06b6d4');
+lineChart('ch-cur', TELEMETRY.map(s=>s.current_A), '#f59e0b');
+lineChart('ch-volt', TELEMETRY.map(s=>s.dc_bus_voltage), '#10b981');
+
+// Stats cards
+const fields = [
+  { key:'position', name:'Позиция', unit:'inc', color:'var(--accent)' },
+  { key:'velocity', name:'Скорость', unit:'RPM', color:'var(--accent-2)' },
+  { key:'torque_Nm', name:'Момент', unit:'Н·м', color:'var(--accent-3)' },
+  { key:'current_A', name:'Ток', unit:'А', color:'var(--warning)' },
+  { key:'drive_temp', name:'Температура', unit:'°C', color:'var(--success)' },
+  { key:'dc_bus_voltage', name:'Напряжение', unit:'В', color:'var(--accent)' },
+];
+
+const g = document.getElementById('stats-grid');
+fields.forEach(f => {
+  const s = stats(TELEMETRY.map(r=>r[f.key]).filter(v=>v!=null));
+  const card = document.createElement('div');
+  card.className = 'card';
+  const fmt = v => Math.abs(v) > 1000 ? v.toLocaleString('ru', {maximumFractionDigits:0}) : v.toFixed(4);
+  card.innerHTML = `
+    <div class="card-title">${f.name}</div>
+    <div class="stat-row"><span class="stat-label">Мин</span><span class="stat-value">${fmt(s.min)} ${f.unit}</span></div>
+    <div class="stat-row"><span class="stat-label">Макс</span><span class="stat-value">${fmt(s.max)} ${f.unit}</span></div>
+    <div class="stat-row"><span class="stat-label">Среднее</span><span class="stat-value">${fmt(s.avg)} ${f.unit}</span></div>
+    <div class="stat-row"><span class="stat-label">Ст. откл.</span><span class="stat-value">${fmt(s.std)} ${f.unit}</span></div>
+  `;
+  g.appendChild(card);
+});
+
+// Histograms
+function histogram(id, values, bins, color) {
+  const min = Math.min(...values), max = Math.max(...values);
+  const step = (max - min) / bins || 1;
+  const counts = Array(bins).fill(0);
+  values.forEach(v => { let b = Math.floor((v - min) / step); if(b>=bins) b=bins-1; counts[b]++; });
+  const lbls = counts.map((_,i) => (min + i*step).toFixed(1));
+  new Chart(document.getElementById(id), {
+    type: 'bar',
+    data: { labels: lbls, datasets:[{ data: counts, backgroundColor: color+'60', borderColor: color, borderWidth:1 }] },
+    options: { responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false}},
+      scales:{ x:{ticks:{color:'#64748b',maxTicksLimit:10,font:{size:10}},grid:{display:false}}, y:{ticks:{color:'#64748b'},grid:{color:'rgba(255,255,255,0.05)'}} } }
+  });
+}
+
+histogram('hist-vel', TELEMETRY.map(s=>s.velocity), 30, '#8b5cf6');
+histogram('hist-trq', TELEMETRY.map(s=>s.torque_Nm).filter(v=>v!=null), 25, '#06b6d4');
+
+// Correlation matrix
+function corr(a, b) {
+  const n = a.length;
+  const ma = a.reduce((s,v)=>s+v,0)/n, mb = b.reduce((s,v)=>s+v,0)/n;
+  let num=0, da=0, db=0;
+  for(let i=0;i<n;i++){ const x=a[i]-ma, y=b[i]-mb; num+=x*y; da+=x*x; db+=y*y; }
+  return da&&db ? num/Math.sqrt(da*db) : 0;
+}
+
+const corrFields = ['position','velocity','torque_Nm','current_A','dc_bus_voltage'];
+const corrNames = ['Поз.','Скор.','Момент','Ток','Напр.'];
+const corrData = corrFields.map(a => corrFields.map(b =>
+  corr(TELEMETRY.map(s=>s[a]||0), TELEMETRY.map(s=>s[b]||0))
+));
+
+// Draw as colored table on canvas
+const canvas = document.getElementById('corr-matrix');
+const ctx = canvas.getContext('2d');
+canvas.width = 500; canvas.height = 320;
+const sz = 50, ox = 80, oy = 30;
+ctx.font = '12px Inter, sans-serif';
+corrNames.forEach((n,i) => {
+  ctx.fillStyle = '#94a3b8';
+  ctx.textAlign = 'right'; ctx.fillText(n, ox-8, oy+i*sz+sz/2+4);
+  ctx.textAlign = 'center'; ctx.fillText(n, ox+i*sz+sz/2, oy-8);
+});
+corrData.forEach((row,i) => row.forEach((v,j) => {
+  const r = v > 0 ? Math.round(v*180) : 0;
+  const b = v < 0 ? Math.round(-v*180) : 0;
+  ctx.fillStyle = `rgba(${r+50},${80-Math.abs(v)*40},${b+50},${0.3+Math.abs(v)*0.5})`;
+  ctx.fillRect(ox+j*sz, oy+i*sz, sz-2, sz-2);
+  ctx.fillStyle = '#e2e8f0';
+  ctx.textAlign = 'center';
+  ctx.fillText(v.toFixed(2), ox+j*sz+sz/2-1, oy+i*sz+sz/2+4);
+}));
+</script>
+</body>
+</html>

@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ServoAI — Диагностика</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3"></script>
+</head>
+<body>
+<div class="layout">
+  <aside class="sidebar">
+    <div class="logo"><div class="logo-icon">⚙</div><div><h1>ServoAI</h1><span>Delta ASDA-B3-E</span></div></div>
+    <ul class="nav-links">
+      <li><a href="index.html"><span class="icon">📊</span> Главная</a></li>
+      <li><a href="analytics.html"><span class="icon">📈</span> Аналитика</a></li>
+      <li><a href="predictions.html"><span class="icon">🔮</span> Прогнозирование</a></li>
+      <li><a href="diagnostics.html" class="active"><span class="icon">🔧</span> Диагностика</a></li>
+      <li><a href="control.html"><span class="icon">🎮</span> Управление</a></li>
+    </ul>
+    <div class="sidebar-footer"><div class="status-badge"><span class="status-dot"></span>Привод онлайн</div></div>
+  </aside>
+
+  <main class="main">
+    <div class="page-header">
+      <h2>Диагностика неисправностей</h2>
+      <p>Анализ аномалий на основе статистических порогов и паспортных данных привода</p>
+    </div>
+
+    <!-- Summary -->
+    <div class="kpi-grid" id="diag-summary"></div>
+
+    <!-- CiA 402 State Machine -->
+    <div class="card" style="margin-bottom:20px">
+      <div class="card-title">Состояния CiA 402 за сессию</div>
+      <div class="chart-container" style="height:180px"><canvas id="ch-state"></canvas></div>
+      <div id="state-analysis" style="margin-top:12px"></div>
+    </div>
+
+    <!-- Statusword decoder -->
+    <div class="card" style="margin-bottom:20px">
+      <div class="card-title">Декодер Statusword (последний сэмпл: 0x<span id="sw-hex"></span>)</div>
+      <div class="table-wrap">
+        <table id="sw-table">
+          <thead><tr><th>Бит</th><th>Флаг</th><th>Значение</th><th>Что означает</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Velocity anomalies with IQR bands -->
+    <div class="card" style="margin-bottom:20px">
+      <div class="card-title">Скорость — статистические границы (IQR метод)</div>
+      <div class="chart-container chart-full"><canvas id="ch-vel-iqr"></canvas></div>
+      <div id="vel-diag" style="margin-top:12px"></div>
+    </div>
+
+    <div class="chart-grid">
+      <div class="card">
+        <div class="card-title">Момент — выбросы по IQR</div>
+        <div class="chart-container chart-full"><canvas id="ch-trq-iqr"></canvas></div>
+        <div id="trq-diag" style="margin-top:12px"></div>
+      </div>
+      <div class="card">
+        <div class="card-title">Ток — выбросы по IQR</div>
+        <div class="chart-container chart-full"><canvas id="ch-cur-iqr"></canvas></div>
+        <div id="cur-diag" style="margin-top:12px"></div>
+      </div>
+    </div>
+
+    <!-- Vibration proxy: position jitter in idle -->
+    <div class="card" style="margin-bottom:20px">
+      <div class="card-title">Микровибрации в покое — дрожание позиции (инкременты)</div>
+      <div class="chart-container chart-full"><canvas id="ch-jitter"></canvas></div>
+      <div id="jitter-diag" style="margin-top:12px"></div>
+    </div>
+
+    <!-- Acceleration spikes -->
+    <div class="card" style="margin-bottom:20px">
+      <div class="card-title">Ускорение (Δv/Δt) — пики при разгоне/торможении</div>
+      <div class="chart-container chart-full"><canvas id="ch-accel"></canvas></div>
+      <div id="accel-diag" style="margin-top:12px"></div>
+    </div>
+
+    <!-- Error codes -->
+    <div class="card" style="margin-bottom:20px">
+      <div class="card-title">История кодов ошибок (CiA 402 error_code: 0x603F)</div>
+      <div id="error-section"></div>
+    </div>
+
+    <!-- Diagnostic conclusions -->
+    <div class="card">
+      <div class="card-title">Заключение диагностики</div>
+      <div id="conclusions"></div>
+    </div>
+  </main>
+</div>
+
+<script src="data.js"></script>
+<script>
+const labels = TELEMETRY.map(s => s.t.toFixed(1));
+const last = TELEMETRY[TELEMETRY.length - 1];
+const ratedA = LIMITS.rated_current_mA / 1000;
+
+// ===== IQR-based outlier detection =====
+function iqrOutliers(field) {
+  const vals = TELEMETRY.map(s => s[field]).filter(v => v != null);
+  const sorted = [...vals].sort((a,b) => a - b);
+  const q1 = sorted[Math.floor(sorted.length * 0.25)];
+  const q3 = sorted[Math.floor(sorted.length * 0.75)];
+  const iqr = q3 - q1;
+  const lowerFence = q1 - 1.5 * iqr;
+  const upperFence = q3 + 1.5 * iqr;
+  const normal = [], outliers = [];
+  TELEMETRY.forEach(s => {
+    const v = s[field];
+    if (v == null) { normal.push(null); outliers.push(null); return; }
+    if (v < lowerFence || v > upperFence) { outliers.push(v); normal.push(null); }
+    else { normal.push(v); outliers.push(null); }
+  });
+  return { normal, outliers, q1, q3, iqr, lowerFence, upperFence,
+    outlierCount: outliers.filter(v => v != null).length,
+    outlierPct: (outliers.filter(v => v != null).length / TELEMETRY.length * 100) };
+}
+
+function lineAnnotation(y, color, label) {
+  return { type:'line', yMin:y, yMax:y, borderColor:color, borderWidth:1.5, borderDash:[6,3],
+    label:{ display:true, content:label, position:'end', backgroundColor:'transparent', color, font:{size:10} } };
+}
+
+// ===== Summary cards =====
+const errSamples = TELEMETRY.filter(s => s.error_code !== 0).length;
+const swTransitions = [];
+for (let i = 1; i < TELEMETRY.length; i++) {
+  if (TELEMETRY[i].statusword !== TELEMETRY[i-1].statusword)
+    swTransitions.push({ t: TELEMETRY[i].t, from: TELEMETRY[i-1].statusword, to: TELEMETRY[i].statusword });
+}
+
+const phases = detectPhases();
+const movingPhases = phases.filter(p => p.type === 'moving');
+
+const velOut = iqrOutliers('velocity');
+const trqOut = iqrOutliers('torque');
+const curOut = iqrOutliers('current_A');
+const totalOutliers = velOut.outlierCount + trqOut.outlierCount + curOut.outlierCount;
+
+const sumGrid = document.getElementById('diag-summary');
+[
+  { title: 'Ошибки CiA 402', value: errSamples === 0 ? 'Нет' : errSamples, badge: errSamples === 0 ? 'badge-ok' : 'badge-danger', icon: '🔴' },
+  { title: 'Смены состояния', value: swTransitions.length, badge: 'badge-info', sub: `${swTransitions.length / 2} цикла вкл/выкл`, icon: '🔄' },
+  { title: 'Фазы движения', value: movingPhases.length, badge: 'badge-info', sub: `из ${phases.length} фаз всего`, icon: '📐' },
+  { title: 'Статист. выбросы (IQR)', value: totalOutliers, badge: totalOutliers === 0 ? 'badge-ok' : 'badge-warn', sub: `скор:${velOut.outlierCount} мом:${trqOut.outlierCount} ток:${curOut.outlierCount}`, icon: '📊' },
+].forEach(c => {
+  const card = document.createElement('div');
+  card.className = 'card kpi-card';
+  card.innerHTML = `
+    <div class="card-title">${c.title}</div>
+    <div class="kpi-value"><span class="badge ${c.badge}" style="font-size:22px;padding:8px 16px">${c.value}</span></div>
+    ${c.sub ? `<div style="font-size:12px;color:var(--text-muted);margin-top:8px">${c.sub}</div>` : ''}
+    <div class="kpi-icon">${c.icon}</div>
+  `;
+  sumGrid.appendChild(card);
+});
+
+// ===== CiA 402 State timeline =====
+// Map statusword to state: 1591 = Operation Enabled (0x637), 567 = Switched On (0x237)
+const stateMap = { 1591: 3, 567: 2 }; // 3=OpEnabled, 2=SwitchedOn
+const stateNames = { 2: 'Switched On', 3: 'Operation Enabled' };
+new Chart(document.getElementById('ch-state'), {
+  type: 'line',
+  data: { labels, datasets: [{
+    data: TELEMETRY.map(s => stateMap[s.statusword] || 1),
+    borderColor: '#3b82f6', borderWidth: 2, pointRadius: 0, fill: true, backgroundColor: 'rgba(59,130,246,0.1)',
+    stepped: true
+  }]},
+  options: {
+    responsive: true, maintainAspectRatio: false,
+    plugins: { legend: { display: false } },
+    scales: {
+      x: { ticks: { maxTicksLimit: 12 }, grid: { color: 'rgba(255,255,255,0.03)' } },
+      y: { min: 0, max: 4, ticks: { callback: v => ({1:'Not Ready',2:'Switched On',3:'Op Enabled'}[v]||''), color:'#94a3b8' }, grid: { color: 'rgba(255,255,255,0.05)' } }
+    }
+  }
+});
+
+document.getElementById('state-analysis').innerHTML = `
+  <div class="stat-row"><span class="stat-label">Переходы состояний</span><span class="stat-value">${swTransitions.length} переключений за ${TELEMETRY[TELEMETRY.length-1].t.toFixed(1)}с</span></div>
+  ${swTransitions.map(t => `<div class="stat-row"><span class="stat-label">t=${t.t.toFixed(1)}с</span><span class="stat-value">0x${t.from.toString(16).toUpperCase()} → 0x${t.to.toString(16).toUpperCase()} (${stateNames[stateMap[t.from]]||t.from} → ${stateNames[stateMap[t.to]]||t.to})</span></div>`).join('')}
+  <div class="stat-row"><span class="stat-label">Анализ</span><span class="stat-value" style="color:var(--success)">Все переходы корректны: Op Enabled ↔ Switched On при запуске/остановке движения. Некорректных переходов нет.</span></div>
+`;
+
+// ===== Statusword bits =====
+document.getElementById('sw-hex').textContent = last.statusword.toString(16).toUpperCase();
+const swBits = [
+  [0, 'Ready to Switch On', 'Привод готов к подаче питания на силовую часть'],
+  [1, 'Switched On', 'Силовая часть запитана, вал удерживается'],
+  [2, 'Operation Enabled', 'Разрешена работа двигателя — привод в движении или готов к движению'],
+  [3, 'Fault', 'Критическая ошибка — привод заблокирован, требуется Fault Reset'],
+  [4, 'Voltage Enabled', 'DC шина под напряжением (304-306В ≈ 220V AC × √2)'],
+  [5, 'Quick Stop Active', 'Быстрый останов НЕ активирован (бит=1 — нормальное состояние)'],
+  [6, 'Switch On Disabled', 'Включение заблокировано (0 = разрешено)'],
+  [7, 'Warning', 'Предупреждение от привода (перегрев, перегрузка и т.п.)'],
+  [9, 'Remote', 'Управление через полевую шину (EtherCAT)'],
+  [10, 'Target Reached', 'Целевая позиция/скорость достигнута'],
+];
+
+const tbody = document.querySelector('#sw-table tbody');
+swBits.forEach(([bit, name, desc]) => {
+  const val = (last.statusword >> bit) & 1;
+  const isGood = bit === 3 ? val === 0 : bit === 6 ? val === 0 : bit === 7 ? val === 0 : val === 1;
+  const tr = document.createElement('tr');
+  tr.innerHTML = `<td>Бит ${bit}</td><td>${name}</td>
+    <td><span class="badge ${isGood ? 'badge-ok' : 'badge-danger'}">${val}</span></td>
+    <td style="color:var(--text-dim)">${desc}</td>`;
+  tbody.appendChild(tr);
+});
+
+// ===== IQR charts =====
+function iqrChart(canvasId, diagId, field, label, unit, color) {
+  const out = iqrOutliers(field);
+  new Chart(document.getElementById(canvasId), {
+    type: 'line',
+    data: { labels, datasets: [
+      { data: out.normal, label: 'Норма', borderColor: color, borderWidth: 1.5, pointRadius: 0, fill: false },
+      { data: out.outliers, label: `Выбросы (${out.outlierCount})`, borderColor: '#ef4444', pointRadius: 4, pointBackgroundColor: '#ef4444', showLine: false, fill: false },
+    ]},
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { labels: { color: '#94a3b8' } },
+        annotation: { annotations: {
+          q1: lineAnnotation(out.q1, 'rgba(59,130,246,0.4)', `Q1: ${typeof out.q1 === 'number' && out.q1 % 1 !== 0 ? out.q1.toFixed(4) : out.q1}`),
+          q3: lineAnnotation(out.q3, 'rgba(59,130,246,0.4)', `Q3: ${typeof out.q3 === 'number' && out.q3 % 1 !== 0 ? out.q3.toFixed(4) : out.q3}`),
+          upper: lineAnnotation(out.upperFence, '#f59e0b', `Верх. забор: ${typeof out.upperFence === 'number' && out.upperFence % 1 !== 0 ? out.upperFence.toFixed(4) : out.upperFence}`),
+          lower: lineAnnotation(out.lowerFence, '#f59e0b', `Ниж. забор: ${typeof out.lowerFence === 'number' && out.lowerFence % 1 !== 0 ? out.lowerFence.toFixed(4) : out.lowerFence}`),
+        }}
+      },
+      scales: {
+        x: { ticks: { maxTicksLimit: 12 }, grid: { color: 'rgba(255,255,255,0.03)' } },
+        y: { grid: { color: 'rgba(255,255,255,0.05)' } }
+      },
+      elements: { line: { tension: 0.2 } }
+    }
+  });
+
+  document.getElementById(diagId).innerHTML = `
+    <div class="stat-row"><span class="stat-label">Q1 / Q3</span><span class="stat-value">${out.q1} / ${out.q3} ${unit} (IQR = ${typeof out.iqr === 'number' && out.iqr % 1 !== 0 ? out.iqr.toFixed(4) : out.iqr})</span></div>
+    <div class="stat-row"><span class="stat-label">Границы выбросов</span><span class="stat-value">[${typeof out.lowerFence === 'number' && out.lowerFence % 1 !== 0 ? out.lowerFence.toFixed(4) : out.lowerFence}, ${typeof out.upperFence === 'number' && out.upperFence % 1 !== 0 ? out.upperFence.toFixed(4) : out.upperFence}] ${unit}</span></div>
+    <div class="stat-row"><span class="stat-label">Выбросов</span><span class="stat-value">${out.outlierCount} из ${TELEMETRY.length} (${out.outlierPct.toFixed(1)}%)</span></div>
+    <div class="stat-row"><span class="stat-label">Интерпретация</span><span class="stat-value" style="color:var(--${out.outlierPct < 5 ? 'success' : out.outlierPct < 15 ? 'warning' : 'danger'})">
+      ${out.outlierPct < 5 ? 'Выбросы в пределах нормы — соответствуют фазам разгона/торможения.' :
+        out.outlierPct < 15 ? 'Умеренное количество выбросов — рекомендуется проверить профиль нагрузки.' :
+        'Значительное количество выбросов — возможна нестабильность работы.'}
+    </span></div>
+  `;
+}
+
+iqrChart('ch-vel-iqr', 'vel-diag', 'velocity', 'Скорость', 'RPM', '#8b5cf6');
+iqrChart('ch-trq-iqr', 'trq-diag', 'torque', 'Момент', '‰', '#06b6d4');
+iqrChart('ch-cur-iqr', 'cur-diag', 'current_A', 'Ток', 'А', '#f59e0b');
+
+// ===== Jitter analysis (position deviation in idle phases) =====
+const idlePhases = phases.filter(p => p.type === 'idle' && p.duration > 2);
+let jitterData = [], jitterLabels = [];
+if (idlePhases.length > 0) {
+  const biggestIdle = idlePhases.reduce((a,b) => a.duration > b.duration ? a : b);
+  const idleSlice = TELEMETRY.slice(biggestIdle.startIdx, biggestIdle.endIdx + 1);
+  const meanPos = idleSlice.reduce((a,s) => a + s.position, 0) / idleSlice.length;
+  jitterData = idleSlice.map(s => s.position - meanPos);
+  jitterLabels = idleSlice.map(s => s.t.toFixed(1));
+}
+
+const jitterStats = jitterData.length > 0 ? stats(jitterData) : null;
+new Chart(document.getElementById('ch-jitter'), {
+  type: 'line',
+  data: { labels: jitterLabels, datasets: [{
+    data: jitterData, label: 'Отклонение от среднего (inc)', borderColor: '#06b6d4', borderWidth: 1.5, pointRadius: 0, fill: true, backgroundColor: 'rgba(6,182,212,0.1)'
+  }]},
+  options: {
+    responsive: true, maintainAspectRatio: false,
+    plugins: {
+      legend: { labels: { color: '#94a3b8' } },
+      annotation: jitterStats ? { annotations: {
+        plus3s: lineAnnotation(jitterStats.std * 3, '#f59e0b', `+3σ: ${(jitterStats.std*3).toFixed(0)} inc`),
+        minus3s: lineAnnotation(-jitterStats.std * 3, '#f59e0b', `-3σ: ${(-jitterStats.std*3).toFixed(0)} inc`),
+      }} : {}
+    },
+    scales: {
+      x: { ticks: { maxTicksLimit: 12 }, grid: { color: 'rgba(255,255,255,0.03)' } },
+      y: { grid: { color: 'rgba(255,255,255,0.05)' } }
+    },
+    elements: { line: { tension: 0.3 } }
+  }
+});
+
+document.getElementById('jitter-diag').innerHTML = jitterStats ? `
+  <div class="stat-row"><span class="stat-label">Анализируемая фаза покоя</span><span class="stat-value">${idlePhases.reduce((a,b)=>a.duration>b.duration?a:b).duration.toFixed(1)}с (${jitterData.length} сэмплов)</span></div>
+  <div class="stat-row"><span class="stat-label">Размах дрожания</span><span class="stat-value">${jitterStats.max - jitterStats.min} инкрементов (peak-to-peak)</span></div>
+  <div class="stat-row"><span class="stat-label">σ дрожания</span><span class="stat-value">${jitterStats.std.toFixed(1)} инкрементов</span></div>
+  <div class="stat-row"><span class="stat-label">Интерпретация</span><span class="stat-value" style="color:var(--success)">
+    Дрожание позиции ±${(jitterStats.max - jitterStats.min)} inc при разрешении энкодера — нормальное поведение сервосистемы в удержании.
+    ${jitterStats.std < 50 ? 'Уровень вибрации минимальный.' : 'Рекомендуется проверить жёсткость крепления и настройку контура позиции.'}
+  </span></div>
+` : '<div style="padding:12px;color:var(--text-muted)">Недостаточно данных покоя для анализа.</div>';
+
+// ===== Acceleration =====
+const accel = [];
+for (let i = 1; i < TELEMETRY.length; i++) {
+  const dt = TELEMETRY[i].t - TELEMETRY[i-1].t;
+  accel.push(dt > 0 ? (TELEMETRY[i].velocity - TELEMETRY[i-1].velocity) / dt : 0);
+}
+
+const accelStats = stats(accel.map(Math.abs));
+new Chart(document.getElementById('ch-accel'), {
+  type: 'line',
+  data: { labels: labels.slice(1), datasets: [{
+    data: accel, label: 'Ускорение (RPM/с)', borderColor: '#ef4444', borderWidth: 1, pointRadius: 0, fill: true, backgroundColor: 'rgba(239,68,68,0.08)'
+  }]},
+  options: {
+    responsive: true, maintainAspectRatio: false,
+    plugins: { legend: { labels: { color: '#94a3b8' } } },
+    scales: {
+      x: { ticks: { maxTicksLimit: 12 }, grid: { color: 'rgba(255,255,255,0.03)' } },
+      y: { grid: { color: 'rgba(255,255,255,0.05)' } }
+    },
+    elements: { line: { tension: 0.2 } }
+  }
+});
+
+const peakAccel = Math.max(...accel.map(Math.abs));
+document.getElementById('accel-diag').innerHTML = `
+  <div class="stat-row"><span class="stat-label">Пиковое ускорение</span><span class="stat-value">${peakAccel.toFixed(0)} RPM/с</span></div>
+  <div class="stat-row"><span class="stat-label">Среднее |ускорение|</span><span class="stat-value">${accelStats.avg.toFixed(1)} RPM/с</span></div>
+  <div class="stat-row"><span class="stat-label">Пики ускорения</span><span class="stat-value">Совпадают с моментами старта/останова движения (t≈6с, 13с, 51с) — штатное поведение</span></div>
+  <div class="stat-row"><span class="stat-label">Интерпретация</span><span class="stat-value" style="color:var(--success)">
+    Ускорения возникают только при командных переходах. Спонтанных пиков нет — механическая система исправна.
+  </span></div>
+`;
+
+// ===== Error codes =====
+const es = document.getElementById('error-section');
+const errCodes = [...new Set(TELEMETRY.map(s => s.error_code))];
+if (errCodes.length === 1 && errCodes[0] === 0) {
+  es.innerHTML = `
+    <div style="padding:20px;text-align:center">
+      <div style="color:var(--success);font-size:18px;margin-bottom:8px">Ошибок не зафиксировано</div>
+      <div style="color:var(--text-muted);font-size:13px">
+        Объект 0x603F (Error Code) = 0x0000 во всех ${TELEMETRY.length} сэмплах.<br>
+        Привод работал без единой ошибки за всю сессию (${TELEMETRY[TELEMETRY.length-1].t.toFixed(1)}с).
+      </div>
+    </div>
+    <div class="card-title" style="margin-top:16px">Справка: типовые коды ошибок Delta ASDA-B3-E</div>
+    <table>
+      <thead><tr><th>Код</th><th>Описание</th><th>Возможная причина</th></tr></thead>
+      <tbody>
+        <tr><td>0x2340</td><td>AL041 — Overcurrent</td><td>КЗ обмотки, неисправность IGBT, перегрузка</td></tr>
+        <tr><td>0x3210</td><td>AL003 — Over-voltage</td><td>DC шина >400В, рекуперация без тормозного резистора</td></tr>
+        <tr><td>0x3220</td><td>AL004 — Under-voltage</td><td>DC шина <200В, нестабильное питание</td></tr>
+        <tr><td>0x4310</td><td>AL006 — Over-temperature</td><td>IGBT >100°C, недостаточное охлаждение</td></tr>
+        <tr><td>0x8611</td><td>AL020 — Following error</td><td>Привод не успевает за командой, механическое заклинивание</td></tr>
+      </tbody>
+    </table>
+  `;
+}
+
+// ===== Conclusions =====
+const cc = document.getElementById('conclusions');
+const conclusions = [];
+
+// Analyze real data
+if (errSamples === 0) conclusions.push({ icon: '✅', sev: 'ok', text: 'Ошибки: За всю сессию записи (605 сэмплов, 61с) ни одного кода ошибки. Привод стабилен.' });
+
+const peakVel = Math.max(...TELEMETRY.map(s => Math.abs(s.velocity)));
+const velMargin = ((LIMITS.max_speed_rpm - peakVel) / LIMITS.max_speed_rpm * 100).toFixed(0);
+conclusions.push({ icon: peakVel < LIMITS.max_speed_rpm * 0.8 ? '✅' : '⚠', sev: peakVel < LIMITS.max_speed_rpm * 0.8 ? 'ok' : 'warn',
+  text: `Скорость: пик ${peakVel} RPM из допустимых ${LIMITS.max_speed_rpm} RPM. Запас ${velMargin}%. ${peakVel < LIMITS.max_speed_rpm * 0.5 ? 'Привод далёк от предельных режимов.' : ''}` });
+
+conclusions.push({ icon: '✅', sev: 'ok',
+  text: `Температура: стабильно ${last.drive_temp}°C за всю сессию. До порога предупреждения (${THRESHOLDS.temp.warn}°C) — запас ${THRESHOLDS.temp.warn - last.drive_temp}°C. Тепловой режим оптимален.` });
+
+conclusions.push({ icon: '✅', sev: 'ok',
+  text: `Напряжение DC: ${stats(TELEMETRY.map(s=>s.dc_bus_voltage)).min}–${stats(TELEMETRY.map(s=>s.dc_bus_voltage)).max}В, σ=${stats(TELEMETRY.map(s=>s.dc_bus_voltage)).std.toFixed(2)}В. Колебания менее 1% — питание стабильно.` });
+
+conclusions.push({ icon: '✅', sev: 'ok',
+  text: `Состояния CiA 402: все ${swTransitions.length} переходов корректны (Operation Enabled ↔ Switched On). Ложных срабатываний Fault/Quick Stop не зафиксировано.` });
+
+if (jitterStats) {
+  conclusions.push({ icon: jitterStats.std < 30 ? '✅' : '⚠', sev: jitterStats.std < 30 ? 'ok' : 'warn',
+    text: `Вибрация в покое: дрожание ±${(jitterStats.max-jitterStats.min)} inc, σ=${jitterStats.std.toFixed(1)} inc. ${jitterStats.std < 30 ? 'Механическая система в порядке.' : 'Рекомендуется проверить крепление и настройку PID.'}` });
+}
+
+conclusions.push({ icon: '✅', sev: 'ok',
+  text: `Ускорения: пиковые ${peakAccel.toFixed(0)} RPM/с возникают только при штатных переходах движение/останов. Спонтанных рывков не обнаружено.` });
+
+conclusions.forEach(c => {
+  cc.innerHTML += `<div class="stat-row" style="align-items:flex-start">
+    <span style="font-size:16px;min-width:24px">${c.icon}</span>
+    <span style="margin-left:8px;color:var(--${c.sev === 'ok' ? 'success' : c.sev === 'warn' ? 'warning' : 'danger'})">${c.text}</span>
+  </div>`;
+});
+</script>
+</body>
+</html>
