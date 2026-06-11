@@ -431,3 +431,84 @@ def test_set_profile_accel_rejects_over_limit():
         sc.SET_PROFILE_ACCEL(fake, 10_000)
     with pytest.raises(ValueError):
         sc.SET_PROFILE_ACCEL(fake, -1)
+
+
+# ---------------------------------------------------------------------------
+# Тесты относительного позиционирования (регрессия B1-runaway)
+# ---------------------------------------------------------------------------
+
+
+def test_ramp_up_down_uses_relative_position(tmp_path: Path):
+    """scenario_ramp_up_down должен использовать ОТНОСИТЕЛЬНЫЕ перемещения
+    от стартовой позиции вала.
+
+    При start_pos=777000, target_delta=50000 (дефолт):
+      - прямой ход → MOVE_AXIS_TO(777000 + 50000 = 827000)
+      - обратный ход → MOVE_AXIS_TO(777000)
+      - НЕ должно быть вызовов с целью 50000 или 0.
+    """
+    START_POS = 777_000
+    TARGET_DELTA = 50_000  # дефолт при target_position_inc=0
+
+    ctrl = FakeController(mode="pp")
+    ctrl._pos = START_POS  # имитируем ненулевую позицию после предыдущих опытов
+
+    args = _base_args(
+        tmp_path,
+        scenario="ramp_up_down",
+        target_position_inc=0,   # используется дефолт 50000
+        duration=0.15,
+        cycle_half_period_s=0.02,
+    )
+    rc, fakes = _run_with_fakes(args, ctrl=ctrl)
+    assert rc == 0
+
+    move_calls = [c for c in fakes.sc.calls if c[0] == "MOVE_AXIS_TO"]
+    # В сценарии (не в finally) должны быть вызовы:
+    move_targets = [c[1][0] for c in move_calls]
+
+    # Прямой ход: start_pos + target_delta
+    assert (START_POS + TARGET_DELTA) in move_targets, \
+        f"Ожидали цель {START_POS + TARGET_DELTA}, но вызовы: {move_targets}"
+    # Обратный ход: start_pos (а не 0)
+    assert START_POS in move_targets, \
+        f"Ожидали обратный ход на {START_POS}, но вызовы: {move_targets}"
+    # НЕ должно быть абсолютного перемещения в 50000 или 0 (кроме finally PP-hold,
+    # но finally после MOVE_AXIS_TO(ctrl, start_pos+delta) ctrl._pos уже != 0).
+    # Фильтруем: target_delta не должна появляться как самостоятельная цель.
+    assert TARGET_DELTA not in move_targets, \
+        f"Обнаружено абсолютное перемещение в {TARGET_DELTA} — должно быть относительное"
+
+
+def test_move_then_hold_uses_relative_position(tmp_path: Path):
+    """scenario_move_then_hold должен использовать ОТНОСИТЕЛЬНЫЕ перемещения
+    от стартовой позиции вала.
+
+    При start_pos=12345, target_delta=10000 (дефолт):
+      - цель → MOVE_AXIS_TO(12345 + 10000 = 22345)
+      - НЕ должно быть вызова с целью 10000.
+    """
+    START_POS = 12_345
+    TARGET_DELTA = 10_000  # дефолт при target_position_inc=0
+
+    ctrl = FakeController(mode="pp")
+    ctrl._pos = START_POS
+
+    args = _base_args(
+        tmp_path,
+        scenario="move_then_hold",
+        target_position_inc=0,   # используется дефолт 10000
+        duration=0.05,
+    )
+    rc, fakes = _run_with_fakes(args, ctrl=ctrl)
+    assert rc == 0
+
+    move_calls = [c for c in fakes.sc.calls if c[0] == "MOVE_AXIS_TO"]
+    move_targets = [c[1][0] for c in move_calls]
+
+    # Должна быть цель start_pos + target_delta
+    assert (START_POS + TARGET_DELTA) in move_targets, \
+        f"Ожидали цель {START_POS + TARGET_DELTA}, но вызовы: {move_targets}"
+    # НЕ должно быть абсолютного перемещения в 10000
+    assert TARGET_DELTA not in move_targets, \
+        f"Обнаружено абсолютное перемещение в {TARGET_DELTA} — должно быть относительное"

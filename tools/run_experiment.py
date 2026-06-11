@@ -83,17 +83,26 @@ def scenario_rotate_reversal(ctrl, stop_flag, args, sc) -> None:
 
 
 def scenario_ramp_up_down(ctrl, stop_flag, args, sc) -> None:
-    """B1..B3: PP — MOVE_AXIS_TO(+P) / wait TR / MOVE_AXIS_TO(0) / wait TR.
+    """B1..B3: PP — MOVE_AXIS_TO(start+delta) / wait TR / MOVE_AXIS_TO(start) / wait TR.
+
+    Все перемещения ОТНОСИТЕЛЬНЫ от стартовой позиции вала (читается один раз
+    перед началом цикла). Это исключает runaway при ненулевой начальной позиции
+    после предыдущих опытов.
 
     Acc/dec уже выставлены оркестратором через SDO до старта (для PV);
     в PP-режиме они применяются приводом из тех же 0x6083/0x6084.
     """
-    target_pos = args.target_position_inc or 50000
+    target_delta = args.target_position_inc or 50000
+    # Читаем стартовую позицию один раз — все перемещения относительно неё.
+    start_pos = sc.READ_POS_RAW(ctrl) if ctrl is not None else 0
+    print(f"[scenario] ramp_up_down: start_pos={start_pos}, target_delta={target_delta}",
+          file=sys.stderr)
     deadline = time.time() + args.duration
     going_out = True
     while time.time() < deadline and not stop_flag.is_set():
         if ctrl is not None:
-            sc.MOVE_AXIS_TO(ctrl, target_pos if going_out else 0,
+            sc.MOVE_AXIS_TO(ctrl,
+                            start_pos + target_delta if going_out else start_pos,
                             wait_ack=True, ack_timeout=1.0)
         # Ждём Target Reached или таймаут полупериода.
         wait_until = min(time.time() + (args.cycle_half_period_s or 5.0), deadline)
@@ -113,11 +122,18 @@ def scenario_cyclic(ctrl, stop_flag, args, sc) -> None:
 
 
 def scenario_move_then_hold(ctrl, stop_flag, args, sc) -> None:
-    """A2: PP MOVE_AXIS_TO(+N), wait TR, sleep(remaining duration)."""
-    target_pos = args.target_position_inc or 10000
+    """A2: PP MOVE_AXIS_TO(start+N), wait TR, sleep(remaining duration).
+
+    Перемещение ОТНОСИТЕЛЬНО стартовой позиции вала — аналогично ramp_up_down.
+    """
+    target_delta = args.target_position_inc or 10000
+    # Читаем стартовую позицию один раз.
+    start_pos = sc.READ_POS_RAW(ctrl) if ctrl is not None else 0
+    print(f"[scenario] move_then_hold: start_pos={start_pos}, target_delta={target_delta}",
+          file=sys.stderr)
     t0 = time.time()
     if ctrl is not None:
-        sc.MOVE_AXIS_TO(ctrl, target_pos, wait_ack=True, ack_timeout=2.0)
+        sc.MOVE_AXIS_TO(ctrl, start_pos + target_delta, wait_ack=True, ack_timeout=2.0)
         # Ждём Target Reached, но не дольше 5 с — потом всё равно начинаем hold.
         tr_deadline = min(time.time() + 5.0, t0 + args.duration)
         while time.time() < tr_deadline and not stop_flag.is_set():
@@ -320,10 +336,10 @@ def run(args: argparse.Namespace, *,
         print("[run_experiment] POWER_ON …")
         sc.POWER_ON(ctrl)
 
-        # В PV-режиме явно прописываем acc/dec перед движением.
-        if mode == "pv":
-            sc.SET_PROFILE_ACCEL(ctrl, args.acceleration)
-            sc.SET_PROFILE_DECEL(ctrl, args.deceleration)
+        # Прописываем acc/dec перед движением. 0x6083/0x6084 применяются
+        # приводом в ОБОИХ режимах (PP и PV), поэтому пишем всегда.
+        sc.SET_PROFILE_ACCEL(ctrl, args.acceleration)
+        sc.SET_PROFILE_DECEL(ctrl, args.deceleration)
 
         logger = telemetry_factory(ctrl, db_path=str(db_path),
                                    period_s=args.period_ms / 1000.0)

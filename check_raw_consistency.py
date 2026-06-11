@@ -238,9 +238,21 @@ def check(session_id: str, csv_row: dict, raw_path: Path):
         else:
             notes.append(f"ramp: p_span={s['p_span']}, v_min={s['v_min']}, v_max={s['v_max']}")
 
+    # ---- 8b. статическая ошибка скорости для rotate_const ----
+    if scen == "rotate_const" and vel > 0:
+        rel = (s["v_abs_avg"] - vel) / vel * 100
+        notes.append(f"rotate_const: статическая ошибка скорости {rel:+.2f}%")
+
     # ---- 9. абсолютные границы безопасности ----
-    if max(abs(s["v_min"]), abs(s["v_max"])) > 1500:
-        issues.append(f"НАРУШЕН лимит |v|<=1500: v_min={s['v_min']}, v_max={s['v_max']}")
+    # Лимит на КОМАНДУ — 1500 RPM. Измеренная скорость может быть чуть выше
+    # из-за квантования обратной связи привода / дискретности сэмплирования.
+    # Допуск +1% (≈15 RPM) для измеренной величины.
+    SPEED_LIMIT_HARD = 1500           # лимит на КОМАНДУ
+    SPEED_LIMIT_MEASURED = 1515       # +1% на статическую ошибку/квантование привода
+    measured_max = max(abs(s["v_min"]), abs(s["v_max"]))
+    if measured_max > SPEED_LIMIT_MEASURED:
+        issues.append(f"|v|_measured_max={measured_max} превышает {SPEED_LIMIT_MEASURED} "
+                      f"(cmd_limit={SPEED_LIMIT_HARD} + 1% допуск)")
     if s["t_max"] and s["t_max"] > 75:
         issues.append(f"drive_temp_max={s['t_max']:.1f}°C > 75")
     if s["vbus_min"] and (s["vbus_min"] < 200 or s["vbus_max"] > 400):
